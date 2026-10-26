@@ -120,6 +120,46 @@ def test_train_request_validation_and_cancel(
     assert second["queue_position"] == 0
 
 
+def fake_weights() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:  # torch.save output is a zip archive
+        zf.writestr("archive/data.pkl", b"")
+    return buf.getvalue()
+
+
+def test_train_from_uploaded_weights(
+    client: TestClient, admin: dict[str, str]
+) -> None:
+    alice = make_user(client, admin, "alice")
+    pid = detect_project(client, admin)["id"]
+    ds = upload_dataset(client, admin, pid, yolo_zip()).json()["id"]
+    url = f"/api/projects/{pid}/base-weights"
+
+    def send(name: str, data: bytes) -> Any:  # noqa: ANN401
+        return client.post(url, files={"file": (name, data)}, headers=admin)
+
+    assert send("best.onnx", fake_weights()).status_code == 415
+    assert send("best.pt", b"not a zip").status_code == 422
+    first = send("../my best.pt", fake_weights()).json()
+    second = send("my best.pt", fake_weights()).json()
+    assert (first["name"], second["name"]) == ("my_best.pt", "my_best-2.pt")
+    listed = client.get(url, headers=admin).json()
+    assert sorted(w["name"] for w in listed) == ["my_best-2.pt", "my_best.pt"]
+    # other projects' members can't see them
+    assert client.get(url, headers=alice).status_code in (403, 404)
+
+    train = f"/api/projects/{pid}/train"
+    body = {"dataset_id": ds, "base_model": "upload:my_best.pt", "epochs": 1}
+    assert client.post(train, json=body, headers=admin).status_code == 201
+    for missing in ("upload:nope.pt", "upload:../../../platform.db"):
+        body["base_model"] = missing
+        assert client.post(train, json=body, headers=admin).status_code == 404
+
+    assert client.delete(f"{url}/my_best-2.pt", headers=admin).status_code == 204
+    assert [w["name"] for w in client.get(url, headers=admin).json()] == ["my_best.pt"]
+    assert client.delete(f"{url}/my_best-2.pt", headers=admin).status_code == 404
+
+
 def test_jobs_and_files_are_project_scoped(
     client: TestClient, admin: dict[str, str]
 ) -> None:

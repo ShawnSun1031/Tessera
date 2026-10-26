@@ -148,12 +148,20 @@ def run_export(ctx: JobContext, job: Job, project: Project) -> dict[str, Any]:
 
 
 def resolve_base_weights(session: Session, project: Project, base: str) -> str:
-    """Catalog weights live in the weights cache; `model:<id>` fine-tunes a model."""
+    """Catalog weights live in the weights cache; `model:<id>` fine-tunes a model;
+    `upload:<name>` starts from a .pt uploaded to the project."""
     if base.startswith("model:"):
         model = session.get(TrainedModel, int(base.split(":", 1)[1]))
         if model is None or model.project_id != project.id:
             raise RuntimeError(f"Base model {base} not found in this project")
         return str(storage.weights_path(model.job_id))
+    if base.startswith("upload:"):
+        assert project.id is not None
+        folder = storage.base_weights_dir(project.id)
+        path = folder / Path(base[len("upload:") :]).name
+        if not path.is_file():
+            raise RuntimeError(f"Uploaded weights {path.name} no longer exist")
+        return str(path)
     names = {a["weights"] for a in training.architectures(project.task_type)}
     if base not in names:
         raise RuntimeError(f"Unknown architecture {base}")
@@ -175,8 +183,8 @@ def run_train(ctx: JobContext, job: Job, project: Project) -> dict[str, Any]:
         return ctx.progress(progress)
 
     metrics = training.train(
-        data_yaml, base, storage.train_dir(job.id), p, get_settings().device,
-        ctx.metric, on_batch,
+        data_yaml, base, project.task_type, storage.train_dir(job.id), p,
+        get_settings().device, ctx.metric, on_batch,
     )  # fmt: skip
     if not storage.weights_path(job.id).exists():
         raise RuntimeError("Training finished without producing best.pt")

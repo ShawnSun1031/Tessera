@@ -19,6 +19,7 @@ function headline(m: Model): { key: string; value: number } | null {
 
 function archLabel(arch: string): string {
   if (arch.startsWith("model:")) return `Continued from model #${arch.slice(6)}`;
+  if (arch.startsWith("upload:")) return `Started from uploaded ${arch.slice(7)}`;
   return arch.replace(".pt", "").replace(/^yolo(\d+)/, "YOLO$1 ").toUpperCase().replace("-SEG", "");
 }
 

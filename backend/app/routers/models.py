@@ -1,5 +1,6 @@
 import shutil
-from datetime import datetime
+import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -23,7 +24,9 @@ router = APIRouter(tags=["models"])
 
 class TrainRequest(BaseModel):
     dataset_id: int
-    base_model: str = Field(description="Catalog weights name or model:<id>")
+    base_model: str = Field(
+        description="Catalog weights name, model:<id> or upload:<file name>"
+    )
     name: str | None = None
     epochs: int = Field(100, ge=1, le=2000)
     imgsz: int = Field(640, ge=64, le=2048, multiple_of=32)
@@ -98,11 +101,81 @@ def check_base_model(session: SessionDep, project: Project, base: str) -> None:
         if model is None or model.project_id != project.id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Base model not found")
         return
+    if base.startswith("upload:"):
+        assert project.id is not None
+        storage.safe_child(storage.base_weights_dir(project.id), base[len("upload:") :])
+        return
     names = {a["weights"] for a in training.architectures(project.task_type)}
     if base not in names:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown architecture {base}"
         )
+
+
+class BaseWeightsRead(BaseModel):
+    name: str
+    size: int
+    uploaded_at: datetime
+
+
+def base_weights_read(path: Path) -> BaseWeightsRead:
+    stat = path.stat()
+    return BaseWeightsRead(
+        name=path.name,
+        size=stat.st_size,
+        uploaded_at=datetime.fromtimestamp(stat.st_mtime, UTC),
+    )
+
+
+@router.get("/projects/{project_id}/base-weights")
+def list_base_weights(project: ProjectDep) -> list[BaseWeightsRead]:
+    """Weights files uploaded to this project, newest first."""
+    assert project.id is not None
+    folder = storage.base_weights_dir(project.id)
+    if not folder.is_dir():
+        return []
+    files = [base_weights_read(p) for p in folder.glob("*.pt")]
+    return sorted(files, key=lambda f: f.uploaded_at, reverse=True)
+
+
+@router.post("/projects/{project_id}/base-weights", status_code=201)
+def upload_base_weights(file: UploadFile, project: ProjectDep) -> BaseWeightsRead:
+    """Store a .pt trained elsewhere so training can start from it.
+
+    Only the file format is checked here; the worker checks that it is an
+    Ultralytics model of the project's task when a training run loads it.
+    """
+    assert project.id is not None
+    original = Path(file.filename or "")
+    if original.suffix.lower() != ".pt":
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Upload a PyTorch .pt file"
+        )
+    stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in original.stem)
+    stem = stem.strip(".") or "weights"
+    folder = storage.base_weights_dir(project.id)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest, n = folder / f"{stem}.pt", 1
+    while dest.exists():
+        n += 1
+        dest = folder / f"{stem}-{n}.pt"
+    partial = dest.with_name(f".{dest.name}.part")
+    with partial.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    if not zipfile.is_zipfile(partial):  # torch.save writes a zip archive
+        partial.unlink()
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{original.name} is not a PyTorch weights file",
+        )
+    partial.replace(dest)
+    return base_weights_read(dest)
+
+
+@router.delete("/projects/{project_id}/base-weights/{name}", status_code=204)
+def delete_base_weights(name: str, project: ProjectDep) -> None:
+    assert project.id is not None
+    storage.safe_child(storage.base_weights_dir(project.id), name).unlink()
 
 
 @router.get("/projects/{project_id}/models")

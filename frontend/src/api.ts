@@ -126,6 +126,12 @@ export interface Architecture {
   weights: string;
 }
 
+export interface BaseWeights {
+  name: string;
+  size: number;
+  uploaded_at: string;
+}
+
 export interface TrainRequest {
   dataset_id: number;
   base_model: string;
@@ -338,6 +344,14 @@ export const api = {
   architectures: (id: number) =>
     request<{ architectures: Architecture[]; augment_presets: string[] }>(`/projects/${id}/architectures`),
   train: (id: number, body: TrainRequest) => request<Job>(`/projects/${id}/train`, json(body)),
+  baseWeights: (id: number) => request<BaseWeights[]>(`/projects/${id}/base-weights`),
+  uploadBaseWeights: (id: number, file: File, onProgress: (fraction: number) => void) => {
+    const form = new FormData();
+    form.append("file", file);
+    return upload<BaseWeights>(`/projects/${id}/base-weights`, form, onProgress);
+  },
+  deleteBaseWeights: (id: number, name: string) =>
+    request<void>(`/projects/${id}/base-weights/${encodeURIComponent(name)}`, { method: "DELETE" }),
 
   jobs: (id: number, kind?: Job["kind"]) => request<Job[]>(`/projects/${id}/jobs${kind ? `?kind=${kind}` : ""}`),
   job: (id: number) => request<Job>(`/jobs/${id}`),

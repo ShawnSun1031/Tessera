@@ -75,6 +75,7 @@ class Cancelled(Exception):
 def train(
     data_yaml: Path,
     base_weights: str,
+    task_type: str,
     run_dir: Path,
     params: dict[str, Any],
     device: str,
@@ -89,6 +90,11 @@ def train(
     from ultralytics import YOLO
 
     model = YOLO(base_weights)
+    if model.task != task_type:  # possible with weights uploaded by the user
+        raise ValueError(
+            f"{Path(base_weights).name} is a {model.task} model, "
+            f"but this project needs a {task_type} model"
+        )
 
     def fit_epoch_end(trainer: Any) -> None:  # noqa: ANN401
         # final_eval re-validates best.pt and reports it as epoch N+1 without an

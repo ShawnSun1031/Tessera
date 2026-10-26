@@ -2,6 +2,7 @@
 
 projects/{project_id}/images/        uploaded images (converted to PNG)
 projects/{project_id}/datasets/{id}/ YOLO datasets (data.yaml, images/, labels/)
+projects/{project_id}/base_weights/  user-uploaded .pt files to start training from
 jobs/{job_id}/                       job log, inputs and outputs
 jobs/{job_id}/uploads/               files sent for inference, before conversion
 jobs/{job_id}/train/                 Ultralytics run dir (weights/best.pt, plots)
@@ -30,6 +31,10 @@ def images_dir(project_id: int) -> Path:
 
 def dataset_dir(project_id: int, dataset_id: int) -> Path:
     return project_dir(project_id) / "datasets" / str(dataset_id)
+
+
+def base_weights_dir(project_id: int) -> Path:
+    return project_dir(project_id) / "base_weights"
 
 
 def job_dir(job_id: int) -> Path:
