@@ -7,6 +7,8 @@ import uuid
 import zipfile
 from pathlib import Path
 
+from PIL import Image
+
 from app.services.tif import TIF_SUFFIXES, convert_tif
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
@@ -47,6 +49,11 @@ def ingest_file(src: Path, images_dir: Path) -> list[tuple[Path, str]]:
                 outs.append((dest, src.name))
             return outs
     if suffix in IMAGE_SUFFIXES:
+        try:
+            with Image.open(src) as im:
+                im.verify()
+        except Exception as e:
+            raise ValueError(f"{src.name} is not a readable image") from e
         dest = unique_path(images_dir, src.name)
         shutil.copyfile(src, dest)
         return [(dest, src.name)]

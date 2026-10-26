@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, fileUrl, upload, type Job, type Model } from "../api";
+import { api, fileUrl, uploadInputs, type Job, type Model, type PartsProgress } from "../api";
 import { useProjectId } from "../components/Layout";
 import { PREDICT_CONF_DEFAULT, usePreferences } from "../prefs";
 import { accuracySeries, lossSeries, METRIC_LABELS, MetricChart } from "../components/MetricChart";
 import { Dropzone, ErrorNotice, JOB_KIND_TEXT, PageHead, ProgressBar, StatusBadge, timeAgo } from "../components/ui";
+
+/** Orders "2.tif" before "10.tif", like a file browser. */
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 function headline(m: Model): { key: string; value: number } | null {
   for (const key of ["metrics/mAP50-95(M)", "metrics/mAP50-95(B)"]) {
@@ -219,22 +222,32 @@ export function PredictPage() {
   const [chosenConf, setConf] = useState<number | null>(null);
   const conf = chosenConf ?? prefs.predict_conf ?? PREDICT_CONF_DEFAULT;
   const [files, setFiles] = useState<File[]>([]);
-  const [progress, setProgress] = useState<number | null>(null);
+  const [progress, setProgress] = useState<PartsProgress | null>(null);
   const [error, setError] = useState<unknown>(null);
   const chosen = modelId || models.data?.[0]?.id || 0;
 
+  // leaving the page stops the upload; ask first
+  useEffect(() => {
+    if (!progress) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [progress !== null]);
+
   const run = async () => {
-    const form = new FormData();
-    files.forEach((f) => form.append("files", f));
-    form.append("conf", String(conf));
     save({ predict_conf: conf });
     setError(null);
-    setProgress(0);
+    const ordered = [...files].sort((a, b) => byName.compare(a.name, b.name));
+    setProgress({ sentBytes: 0, totalBytes: 1, sentFiles: 0, totalFiles: ordered.length });
+    let job: Job | null = null;
     try {
-      const job = await upload<Job>(`/models/${chosen}/predict`, form, setProgress);
+      job = await api.createPredictJob(chosen, conf);
+      await uploadInputs(job.id, ordered, setProgress);
+      await api.startJob(job.id);
       qc.invalidateQueries({ queryKey: ["queue"] });
       navigate(`../jobs/${job.id}`);
     } catch (e) {
+      if (job) api.cancelJob(job.id).catch(() => undefined); // frees the partial upload
       setError(e);
       setProgress(null);
     }
@@ -300,9 +313,19 @@ export function PredictPage() {
           onFiles={(f) => setFiles((prev) => [...prev, ...f])}
           disabled={progress !== null}
           title={files.length ? `${files.length} file${files.length === 1 ? "" : "s"} chosen. Drop more or click to add` : "Drop images here, or click to choose"}
-          hint="TIF, PNG, JPG or a .zip; up to 500 images per run"
+          hint="TIF, PNG, JPG or a .zip. Thousands of images are fine: they are sent in parts, in file-name order."
         />
-        {progress !== null && <ProgressBar value={progress} />}
+        {progress !== null && (
+          <div className="stack" style={{ ["--step" as string]: "0.4rem" }}>
+            <div className="row spread small">
+              <span className="num">
+                Uploading {progress.sentFiles.toLocaleString()} of {progress.totalFiles.toLocaleString()} files
+              </span>
+              <span className="muted">Keep this page open until the upload finishes.</span>
+            </div>
+            <ProgressBar value={progress.sentBytes / progress.totalBytes} />
+          </div>
+        )}
         <ErrorNotice error={error} />
         <div className="row">
           <button className="btn primary" onClick={run} disabled={!chosen || !files.length || progress !== null}>

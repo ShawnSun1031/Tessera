@@ -329,6 +329,15 @@ function eta(job: Job, fraction: number): string | null {
   return `about ${(remaining / 3600).toFixed(1)} h left`;
 }
 
+/** Inference runs in stages: convert the uploaded files, predict, zip the results. */
+function predictStage(job: Job): { text: string; fraction: number; eta: boolean } {
+  const p = job.progress;
+  if (p.packaging) return { text: "Packing results for download…", fraction: 1, eta: false };
+  if (p.files) return { text: `Preparing images: ${p.prepared ?? 0} of ${p.files} files`, fraction: (p.prepared ?? 0) / p.files, eta: false };
+  if (p.total) return { text: `${p.done ?? 0} of ${p.total} images`, fraction: (p.done ?? 0) / p.total, eta: true };
+  return { text: "Starting…", fraction: 0, eta: false };
+}
+
 export function JobPage() {
   const { jobId } = useParams();
   const id = Number(jobId);
@@ -356,7 +365,8 @@ export function JobPage() {
 
   if (!job) return <p className="muted">{connected ? "Loading…" : "Connecting…"}</p>;
   const active = !TERMINAL.includes(job.status);
-  const fraction = job.kind === "train" ? trainFraction(job) : job.progress.total ? job.progress.done / job.progress.total : 0;
+  const stage = job.kind === "predict" ? predictStage(job) : null;
+  const fraction = job.kind === "train" ? trainFraction(job) : stage ? stage.fraction : 0;
 
   return (
     <div className="stack">
@@ -402,9 +412,9 @@ export function JobPage() {
                 ? job.progress.epochs
                   ? `Epoch ${job.progress.epoch} of ${job.progress.epochs}`
                   : "Preparing data and model…"
-                : `${job.progress.done ?? 0} of ${job.progress.total ?? "?"} images`}
+                : stage?.text}
             </span>
-            <span className="muted">{eta(job, fraction)}</span>
+            <span className="muted">{!stage || stage.eta ? eta(job, fraction) : null}</span>
           </div>
           <ProgressBar value={fraction} running />
         </section>
@@ -515,9 +525,28 @@ function JobResult({ job }: { job: Job }) {
   return <PredictionResult job={job} />;
 }
 
+const GALLERY_PAGE = 60;
+
 export function PredictionResult({ job }: { job: Job }) {
   const preds = useQuery({ queryKey: ["predictions", job.id], queryFn: () => api.predictions(job.id) });
   const perClass: Record<string, number> = job.result.per_class ?? {};
+  const [page, setPage] = useState(0);
+  const all = preds.data ?? [];
+  const pages = Math.max(1, Math.ceil(all.length / GALLERY_PAGE));
+  const shown = all.slice(page * GALLERY_PAGE, (page + 1) * GALLERY_PAGE);
+  const pager = pages > 1 && (
+    <div className="row small">
+      <button className="btn small" onClick={() => setPage(page - 1)} disabled={page === 0}>
+        Previous
+      </button>
+      <span className="num">
+        Page {page + 1} of {pages} ({all.length.toLocaleString()} images)
+      </span>
+      <button className="btn small" onClick={() => setPage(page + 1)} disabled={page >= pages - 1}>
+        Next
+      </button>
+    </div>
+  );
   return (
     <section className="stack">
       <div className="panel row spread">
@@ -533,14 +562,28 @@ export function PredictionResult({ job }: { job: Job }) {
             </div>
           ))}
         </div>
-        <a className="btn primary" href={fileUrl(`/jobs/${job.id}/download`)}>
-          Download all (.zip)
-        </a>
+        <div className="row">
+          <a className="btn" href={fileUrl(`/jobs/${job.id}/files/output/predictions.json`)} download={`predictions_job${job.id}.json`}>
+            Coordinates only (.json)
+          </a>
+          <a className="btn primary" href={fileUrl(`/jobs/${job.id}/download`)}>
+            Download all (.zip)
+          </a>
+        </div>
       </div>
-      <p className="small muted">The zip has every image with its detections drawn on, plus predictions.json with exact coordinates and confidence.</p>
+      <p className="small muted">
+        The zip has every image with its detections drawn on, plus predictions.json with exact coordinates and confidence. For
+        thousands of images the zip is large; download the .json alone if you only need the coordinates.
+      </p>
+      {job.result.skipped_files > 0 && (
+        <div className="notice error">
+          {job.result.skipped_files} uploaded file(s) could not be read as images and were left out. The log lists them.
+        </div>
+      )}
       <SendToLabelStudio job={job} />
+      {pager}
       <div className="gallery">
-        {preds.data?.map((p) => {
+        {shown.map((p) => {
           const stem = p.image.replace(/\.[^.]+$/, "");
           return (
             <figure key={p.image}>
@@ -552,6 +595,7 @@ export function PredictionResult({ job }: { job: Job }) {
           );
         })}
       </div>
+      {pager}
     </section>
   );
 }

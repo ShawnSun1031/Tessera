@@ -2,11 +2,14 @@
 
 import logging
 import os
+import shutil
 import socket
+import tempfile
 import time
 import traceback
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import update
@@ -19,12 +22,14 @@ from app.models import Dataset, Job, Metric, Project, TrainedModel
 from app.services import training
 from app.services.datasets import dataset_stats
 from app.services.export_yolo import image_key, write_dataset
+from app.services.ingest import ingest_file, natural_key
 from app.services.labelstudio import LabelStudio
 
 log = logging.getLogger("platform.worker")
 log.setLevel(logging.INFO)
 TERMINAL = ("succeeded", "failed", "cancelled")
 PROGRESS_INTERVAL = 1.0  # seconds between progress writes / cancel checks
+UPLOAD_TTL = timedelta(hours=24)  # unfinished inference uploads are dropped after this
 
 
 def worker_name() -> str:
@@ -200,22 +205,56 @@ def load_model(ctx: JobContext, project: Project, model_id: int) -> TrainedModel
         return model
 
 
+def prepare_inputs(ctx: JobContext, job_id: int) -> tuple[list[Path], int]:
+    """Convert uploaded files (TIFs, images, zips) to model inputs, in upload order.
+
+    Returns the inputs and how many uploaded files could not be read.
+    """
+    uploads, inputs = storage.uploads_dir(job_id), storage.job_dir(job_id) / "inputs"
+    if not uploads.is_dir():  # jobs from before uploads were converted here
+        return sorted(inputs.glob("*"), key=lambda p: natural_key(p.name)), 0
+    files = sorted(p for p in uploads.iterdir() if p.name[0] != ".")
+    limit = get_settings().max_predict_images
+    outs: list[Path] = []
+    skipped = 0
+    for i, src in enumerate(files):
+        if ctx.progress({"prepared": i, "files": len(files)}):
+            raise training.Cancelled
+        with tempfile.TemporaryDirectory() as tmp:
+            # drop the "000123-" order prefix so outputs keep the original name
+            named = Path(tmp) / src.name.split("-", 1)[1]
+            shutil.move(src, named)
+            try:
+                outs += [path for path, _ in ingest_file(named, inputs)]
+            except Exception as e:
+                log.warning(f"Skipped {named.name}: {e}")
+                skipped += 1
+        if len(outs) > limit:
+            raise RuntimeError(f"More than {limit} images; split them into runs")
+    shutil.rmtree(uploads, ignore_errors=True)
+    return outs, skipped
+
+
 def run_predict(ctx: JobContext, job: Job, project: Project) -> dict[str, Any]:
     assert job.id is not None
     p = job.params
     model = load_model(ctx, project, p["model_id"])
-    inputs = sorted((storage.job_dir(job.id) / "inputs").glob("*"))
+    inputs, skipped = prepare_inputs(ctx, job.id)
     if not inputs:
-        raise RuntimeError("No input images")
+        raise RuntimeError("None of the uploaded files could be read as images")
 
     def on_progress(done: int, total: int) -> bool:
         return ctx.progress({"done": done, "total": total}, force=done == total)
 
-    return training.predict(
-        storage.weights_path(model.job_id), inputs, storage.job_dir(job.id) / "output",
+    out = storage.job_dir(job.id) / "output"
+    result = training.predict(
+        storage.weights_path(model.job_id), inputs, out,
         p.get("conf", 0.25), p.get("iou", 0.7), p.get("imgsz", 640),
         get_settings().device, on_progress,
     )  # fmt: skip
+    ctx.progress({"packaging": 1}, force=True)
+    training.zip_output(out, storage.output_zip(job.id))
+    return {**result, "skipped_files": skipped}
 
 
 def run_onnx(ctx: JobContext, job: Job, project: Project) -> dict[str, Any]:
@@ -263,6 +302,26 @@ def run_job(engine: Any, job_id: int) -> None:  # noqa: ANN401
         for lg in loggers:
             lg.removeHandler(handler)
         handler.close()
+
+
+def expire_uploads(engine: Any, max_age: timedelta = UPLOAD_TTL) -> None:  # noqa: ANN401
+    """Cancel inference jobs whose upload was abandoned (e.g. the tab was closed)."""
+    cutoff = datetime.now(UTC) - max_age
+    with Session(engine) as session:
+        jobs = session.exec(select(Job).where(Job.status == "uploading")).all()
+        for job in jobs:
+            created = job.created_at
+            if created.tzinfo is None:  # SQLite drops the timezone
+                created = created.replace(tzinfo=UTC)
+            if created > cutoff:
+                continue
+            assert job.id is not None
+            shutil.rmtree(storage.uploads_dir(job.id), ignore_errors=True)
+            job.status = "cancelled"
+            job.error = "The upload was not finished"
+            job.finished_at = datetime.now(UTC)
+            session.add(job)
+        session.commit()
 
 
 def recover_orphans(engine: Any, name: str) -> None:  # noqa: ANN401
@@ -313,9 +372,13 @@ def main() -> None:
     name = worker_name()
     recover_orphans(engine, name)
     log.info(f"Worker {name} polling every {settings.worker_poll_seconds}s")
+    last_expiry = 0.0
     while True:
         job_id = claim_next(engine, name)
         if job_id is None:
+            if time.monotonic() - last_expiry > 600:
+                expire_uploads(engine)
+                last_expiry = time.monotonic()
             time.sleep(settings.worker_poll_seconds)
             continue
         run_job(engine, job_id)

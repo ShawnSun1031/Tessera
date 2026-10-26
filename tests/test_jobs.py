@@ -184,10 +184,9 @@ def test_inference_defaults_to_training_image_size(
     assert client.get(f"/api/models/{model_id}", headers=admin).json()["imgsz"] == 1056
     onnx = client.post(f"/api/models/{model_id}/export-onnx", json={}, headers=admin)
     assert onnx.json()["params"]["imgsz"] == 1056
-    files = [("files", ("a.png", png_bytes(), "image/png"))]
-    pred = client.post(f"/api/models/{model_id}/predict", files=files, headers=admin)
+    pred = client.post(f"/api/models/{model_id}/predict", headers=admin)
     assert pred.json()["params"]["imgsz"] == 1056
     override = client.post(
-        f"/api/models/{model_id}/predict", files=files, data={"imgsz": "640"}, headers=admin
+        f"/api/models/{model_id}/predict", data={"imgsz": "640"}, headers=admin
     )
     assert override.json()["params"]["imgsz"] == 640

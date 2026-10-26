@@ -232,6 +232,66 @@ export function upload<T>(path: string, form: FormData, onProgress?: (fraction: 
   });
 }
 
+const PART_FILES = 100;
+const PART_BYTES = 200 * 1024 * 1024;
+const RETRY_DELAYS_MS = [2000, 5000, 15000];
+
+/** Groups of at most PART_FILES files / PART_BYTES; a bigger file goes alone. */
+function uploadParts(files: File[]): File[][] {
+  const parts: File[][] = [];
+  let part: File[] = [];
+  let bytes = 0;
+  for (const f of files) {
+    if (part.length && (part.length >= PART_FILES || bytes + f.size > PART_BYTES)) {
+      parts.push(part);
+      part = [];
+      bytes = 0;
+    }
+    part.push(f);
+    bytes += f.size;
+  }
+  if (part.length) parts.push(part);
+  return parts;
+}
+
+export interface PartsProgress {
+  sentBytes: number;
+  totalBytes: number;
+  sentFiles: number;
+  totalFiles: number;
+}
+
+/** Send an inference job's files in parts, retrying a part that fails on the way.
+ * Each part carries the index of its first file, so the server keeps the order and a
+ * retried part replaces itself instead of adding duplicates. */
+export async function uploadInputs(jobId: number, files: File[], onProgress: (p: PartsProgress) => void): Promise<void> {
+  const totalBytes = files.reduce((n, f) => n + f.size, 0);
+  let sentBytes = 0;
+  let offset = 0;
+  for (const part of uploadParts(files)) {
+    const size = part.reduce((n, f) => n + f.size, 0);
+    const form = new FormData();
+    form.append("offset", String(offset));
+    part.forEach((f) => form.append("files", f));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await upload(`/jobs/${jobId}/inputs`, form, (fraction) =>
+          onProgress({ sentBytes: sentBytes + fraction * size, totalBytes, sentFiles: offset, totalFiles: files.length }),
+        );
+        break;
+      } catch (e) {
+        // 4xx means the request itself is wrong; sending it again won't help
+        const clientError = e instanceof ApiError && e.status >= 400 && e.status < 500;
+        if (clientError || attempt >= RETRY_DELAYS_MS.length) throw e;
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+    sentBytes += size;
+    offset += part.length;
+    onProgress({ sentBytes, totalBytes, sentFiles: offset, totalFiles: files.length });
+  }
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<{ access_token: string }>("/auth/login", {
@@ -286,6 +346,12 @@ export const api = {
   models: (id: number) => request<Model[]>(`/projects/${id}/models`),
   model: (id: number) => request<Model>(`/models/${id}`),
   exportOnnx: (id: number) => request<Job>(`/models/${id}/export-onnx`, json({})),
+  createPredictJob: (id: number, conf: number) => {
+    const form = new FormData();
+    form.append("conf", String(conf));
+    return request<Job>(`/models/${id}/predict`, { method: "POST", body: form });
+  },
+  startJob: (id: number) => request<Job>(`/jobs/${id}/start`, { method: "POST" }),
   sendPredictions: (jobId: number) =>
     request<SentToLabelStudio>(`/labelstudio/send-predictions/${jobId}`, { method: "POST" }),
   predictions: (jobId: number) => request<PredictionRecord[]>(`/jobs/${jobId}/files/output/predictions.json`),

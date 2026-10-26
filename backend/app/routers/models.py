@@ -1,5 +1,4 @@
 import shutil
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -11,16 +10,15 @@ from sqlmodel import Session, col, select
 
 from app import storage
 from app.auth import CurrentUser, SessionDep
-from app.deps import ModelDep, ProjectDep, enqueue
+from app.config import get_settings
+from app.deps import JobDep, ModelDep, ProjectDep, enqueue
 from app.db import get_engine
 from app.models import Dataset, Job, Project, TrainedModel
 from app.routers.jobs import JobRead, to_read
 from app.services import training
-from app.services.ingest import ACCEPTED_SUFFIXES, ingest_file
+from app.services.ingest import ACCEPTED_SUFFIXES
 
 router = APIRouter(tags=["models"])
-
-MAX_PREDICT_IMAGES = 500
 
 
 class TrainRequest(BaseModel):
@@ -158,7 +156,6 @@ def export_onnx(
 
 @router.post("/models/{model_id}/predict", status_code=201)
 def predict(
-    files: list[UploadFile],
     model: ModelDep,
     session: SessionDep,
     user: CurrentUser,
@@ -166,38 +163,68 @@ def predict(
     iou: Annotated[float, Form(gt=0, lt=1)] = 0.7,
     imgsz: Annotated[int | None, Form(ge=64, le=2048, multiple_of=32)] = None,
 ) -> JobRead:
-    """Upload images (TIF/PNG/JPG or zip) and queue an inference job."""
-    for f in files:
-        if Path(f.filename or "").suffix.lower() not in ACCEPTED_SUFFIXES:
-            raise HTTPException(
-                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"{f.filename}: unsupported"
-            )
+    """Create an inference job. Send images in parts with POST /jobs/{id}/inputs,
+    then queue it with POST /jobs/{id}/start."""
     project = session.get(Project, model.project_id)
     assert project is not None
     params = {
         "model_id": model.id, "conf": conf, "iou": iou,
         "imgsz": imgsz or trained_imgsz(model),
     }  # fmt: skip
-    # not visible to the worker until its inputs are on disk
     job = enqueue(session, project, user, "predict", params, status_="uploading")
+    return to_read(session, job)
+
+
+class InputsRead(BaseModel):
+    files: int
+
+
+def uploading_job(job: Job) -> int:
+    if job.kind != "predict" or job.status != "uploading":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This job is not taking uploads")
     assert job.id is not None
-    inputs = storage.job_dir(job.id) / "inputs"
-    count = 0
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            for f in files:
-                src = Path(tmp) / Path(f.filename or "upload").name
-                with src.open("wb") as out:
-                    shutil.copyfileobj(f.file, out)
-                count += len(ingest_file(src, inputs))
-                src.unlink()
-        if not count or count > MAX_PREDICT_IMAGES:
-            raise ValueError(f"Upload between 1 and {MAX_PREDICT_IMAGES} images")
-    except Exception as e:
-        session.delete(job)
-        session.commit()
-        shutil.rmtree(storage.job_dir(job.id), ignore_errors=True)
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
+    return job.id
+
+
+@router.post("/jobs/{job_id}/inputs")
+def add_inputs(
+    files: list[UploadFile],
+    job: JobDep,
+    offset: Annotated[int, Form(ge=0)] = 0,
+) -> InputsRead:
+    """Store one part of an upload. `offset` is the index of the first file in the
+    whole upload: it keeps the original order and makes retrying a part safe."""
+    job_id = uploading_job(job)
+    if offset + len(files) > get_settings().max_predict_images:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Up to {get_settings().max_predict_images} files per run",
+        )
+    for f in files:
+        if Path(f.filename or "").suffix.lower() not in ACCEPTED_SUFFIXES:
+            raise HTTPException(
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"{f.filename}: unsupported"
+            )
+    uploads = storage.uploads_dir(job_id)
+    uploads.mkdir(parents=True, exist_ok=True)
+    for i, f in enumerate(files):
+        dest = uploads / f"{offset + i:06d}-{Path(f.filename or 'upload').name}"
+        partial = dest.with_name(f".{dest.name}.part")
+        with partial.open("wb") as out:
+            shutil.copyfileobj(f.file, out)
+        partial.replace(dest)
+    return InputsRead(files=sum(1 for p in uploads.iterdir() if p.name[0] != "."))
+
+
+@router.post("/jobs/{job_id}/start")
+def start_job(job: JobDep, session: SessionDep) -> JobRead:
+    """Queue an inference job once all its files are uploaded."""
+    job_id = uploading_job(job)
+    uploads = storage.uploads_dir(job_id)
+    if not uploads.is_dir() or not any(p.name[0] != "." for p in uploads.iterdir()):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Upload at least one image first"
+        )
     job.status = "queued"
     session.add(job)
     session.commit()

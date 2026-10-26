@@ -15,6 +15,7 @@ from app.auth import CurrentUser, SessionDep
 from app.db import get_engine
 from app.deps import JobDep, ProjectDep
 from app.models import Job, Metric, User
+from app.services import training
 
 router = APIRouter(tags=["jobs"])
 
@@ -118,7 +119,11 @@ def get_job(job: JobDep, session: SessionDep) -> JobRead:
 
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job: JobDep, session: SessionDep) -> JobRead:
-    if job.status == "queued":
+    if job.status == "uploading":
+        assert job.id is not None
+        job.status = "cancelled"
+        shutil.rmtree(storage.uploads_dir(job.id), ignore_errors=True)
+    elif job.status == "queued":
         job.status = "cancelled"
     elif job.status == "running":
         job.cancel_requested = True
@@ -222,7 +227,7 @@ def download_output(job: JobDep) -> FileResponse:
     out = storage.job_dir(job.id) / "output"
     if job.status != "succeeded" or not out.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No output to download")
-    archive = storage.job_dir(job.id) / "output.zip"
-    if not archive.exists():
-        shutil.make_archive(str(archive.with_suffix("")), "zip", out)
+    archive = storage.output_zip(job.id)
+    if not archive.exists():  # jobs from before the worker wrote the zip itself
+        training.zip_output(out, archive)
     return FileResponse(archive, filename=f"predictions_job{job.id}.zip")

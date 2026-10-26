@@ -22,6 +22,7 @@ class Settings:
     admin_password: str
     device: str
     worker_poll_seconds: float
+    max_predict_images: int
 
 
 def persistent_secret(storage_dir: Path) -> str:
@@ -52,4 +53,5 @@ def get_settings() -> Settings:
         admin_password=env("ADMIN_PASSWORD", ""),
         device=env("DEVICE", ""),
         worker_poll_seconds=float(env("WORKER_POLL_SECONDS", "2")),
+        max_predict_images=int(env("MAX_PREDICT_IMAGES", "20000")),
     )

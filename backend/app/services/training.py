@@ -3,6 +3,7 @@
 import json
 import math
 import shutil
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -189,6 +190,17 @@ def predict(
     on_progress(len(inputs), len(inputs))
     (out_dir / "predictions.json").write_text(json.dumps(records, indent=1))
     return {"images": len(inputs), "objects": sum(counts.values()), "per_class": counts}
+
+
+def zip_output(out_dir: Path, archive: Path) -> None:
+    """Zip inference output, storing PNGs as-is: recompressing them gains nothing."""
+    partial = archive.with_suffix(".part")
+    with zipfile.ZipFile(partial, "w", zipfile.ZIP_STORED) as zf:
+        for path in sorted(p for p in out_dir.rglob("*") if p.is_file()):
+            png = path.suffix == ".png"
+            method = zipfile.ZIP_STORED if png else zipfile.ZIP_DEFLATED
+            zf.write(path, path.relative_to(out_dir), compress_type=method)
+    partial.replace(archive)
 
 
 def export_onnx(weights: Path, imgsz: int) -> Path:
