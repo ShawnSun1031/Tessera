@@ -6,6 +6,7 @@ from label_studio_sdk.converter.brush import mask2rle
 from PIL import Image
 
 from app.services.export_yolo import annotation_to_lines, class_names, write_dataset
+from app.services.ingest import natural_key, sortable_name
 from app.services.tif import convert_tif
 
 W, H = 100, 50
@@ -121,3 +122,11 @@ def test_convert_multipage_tif(tmp_path):
     frames[0].save(src, save_all=True, append_images=frames[1:])
     outs = convert_tif(src, tmp_path / "png")
     assert [o.name for o in outs] == ["stack_p000.png", "stack_p001.png", "stack_p002.png"]
+
+
+def test_natural_and_sortable_names():
+    names = ["10.tif", "2.tif", "1_p010.png", "1_p002.png", "1.tif"]
+    assert sorted(names, key=natural_key) == ["1.tif", "1_p002.png", "1_p010.png", "2.tif", "10.tif"]
+    padded = [sortable_name(n) for n in names]
+    assert sorted(padded) == [sortable_name(n) for n in sorted(names, key=natural_key)]
+    assert sortable_name("scan_7.png") == "scan_000007.png"

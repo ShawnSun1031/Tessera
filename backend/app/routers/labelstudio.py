@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.deps import JobDep, LabelStudioDep
 from app.models import Image, Project, TrainedModel
 from app.services.export_yolo import class_names, infer_task_type
-from app.services.ingest import unique_path
+from app.services.ingest import sortable_name, unique_path
 from app.services.labelstudio import LabelStudio, label_config
 from app.services.ls_predictions import labeling_tools, prediction_results
 
@@ -123,6 +123,7 @@ def send_predictions(
         image_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, image_path)
         task_id = ls.import_file(ls_project_id, image_path)
+        ls.update_task_data(task_id, {"filename": sortable_name(image_path.name)})
         results, n_skipped = prediction_results(record, tools)
         if results:
             scores = [r["score"] for r in results if r.get("score") is not None]

@@ -20,6 +20,7 @@ class FakeLabelStudio:
         self.projects: dict[int, dict[str, Any]] = {}
         self.uploaded: list[str] = []
         self.predictions: dict[int, list[dict[str, Any]]] = {}
+        self.task_data: dict[int, dict[str, Any]] = {}
 
     def import_file(self, project_id: int, path: Path) -> int:
         assert path.exists()
@@ -42,10 +43,14 @@ class FakeLabelStudio:
         self.projects[pid] = {"id": pid, "title": title, "label_config": config}
         return self.projects[pid]
 
-    def import_files(self, project_id: int, paths: list[Path]) -> int:
+    def import_files(self, project_id: int, paths: list[Path]) -> list[int]:
         assert all(p.exists() for p in paths)
+        start = len(self.uploaded)
         self.uploaded += [p.name for p in paths]
-        return len(paths)
+        return [1001 + start + i for i in range(len(paths))]
+
+    def update_task_data(self, task_id: int, fields: dict[str, Any]) -> None:
+        self.task_data.setdefault(task_id, {}).update(fields)
 
     def project(self, project_id: int) -> dict[str, Any]:
         if project_id not in self.projects:

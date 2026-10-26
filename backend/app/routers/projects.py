@@ -15,7 +15,12 @@ from app.config import get_settings
 from app.deps import LabelStudioDep, ProjectDep, can_access
 from app.models import Image, Project, ProjectMember, User
 from app.routers.labelstudio import describe, ensure_ls_project
-from app.services.ingest import ACCEPTED_SUFFIXES, ingest_file
+from app.services.ingest import (
+    ACCEPTED_SUFFIXES,
+    ingest_file,
+    natural_key,
+    sortable_name,
+)
 from app.storage import images_dir, safe_child
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -200,6 +205,8 @@ def upload_files(
                 f"{f.filename}: accepted types are {', '.join(ACCEPTED_SUFFIXES)}",
             )
     created = []
+    # image ids, and so Label Studio task ids, follow the original folder order
+    files = sorted(files, key=lambda f: natural_key(f.filename or ""))
     with tempfile.TemporaryDirectory() as tmp:
         for f in files:
             src = Path(tmp) / Path(f.filename or "upload").name
@@ -250,16 +257,20 @@ def sync_label_studio(
         select(Image).where(
             Image.project_id == project.id, col(Image.in_label_studio).is_(False)
         )
+        .order_by(col(Image.id))
     ).all()
     for start in range(0, len(pending), LS_IMPORT_BATCH):
         batch = pending[start : start + LS_IMPORT_BATCH]
         paths = [images_dir(project.id) / i.filename for i in batch]
-        ls.import_files(ls_project_id, paths)
+        task_ids = ls.import_files(ls_project_id, paths)
         # commit per batch so a failure part-way doesn't re-upload what succeeded
         for image in batch:
             image.in_label_studio = True
             session.add(image)
         session.commit()
+        # a sortable filename column; LS's own "upload filename" has a random prefix
+        for task_id, image in zip(task_ids, batch):
+            ls.update_task_data(task_id, {"filename": sortable_name(image.filename)})
     return label_studio_status(project, session, ls)
 
 

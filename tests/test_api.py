@@ -90,6 +90,27 @@ def test_upload_and_sync(
     assert fake_ls.uploaded == ["a.png", "b.png"]
 
 
+def test_upload_keeps_numeric_order(
+    client: TestClient, admin: dict[str, str], fake_ls: FakeLabelStudio
+) -> None:
+    url = f"/api/projects/{new_project(client, admin)['id']}"
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w") as zf:
+        for n in (100, 20, 9):
+            zf.writestr(f"{n}.tif", tif_bytes())
+    files = [("files", (f"{n}.tif", tif_bytes(), "image/tiff")) for n in (10, 2, 1)]
+    files.append(("files", ("batch.zip", zbuf.getvalue(), "application/zip")))
+    assert client.post(f"{url}/uploads", files=files, headers=admin).status_code == 201
+
+    client.post(f"{url}/labelstudio/sync", headers=admin)
+    expected = ["1.png", "2.png", "10.png", "9.png", "20.png", "100.png"]
+    assert fake_ls.uploaded == expected
+    images = client.get(f"{url}/images", headers=admin).json()
+    assert [i["filename"] for i in images] == expected
+    names = [fake_ls.task_data[1001 + i]["filename"] for i in range(len(expected))]
+    assert names == ["000001.png", "000002.png", "000010.png", "000009.png", "000020.png", "000100.png"]
+
+
 def test_preferences_are_per_user_and_merge(client: TestClient, admin: dict[str, str]) -> None:
     alice = make_user(client, admin, "alice")
     url = "/api/auth/me/preferences"

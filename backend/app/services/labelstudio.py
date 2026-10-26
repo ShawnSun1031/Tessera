@@ -146,17 +146,36 @@ class LabelStudio:
     def delete_project(self, project_id: int) -> None:
         self.client.delete(f"/api/projects/{project_id}").raise_for_status()
 
-    def import_files(self, project_id: int, paths: Sequence[Path]) -> int:
-        """Upload image files as new tasks; returns the number of tasks created."""
+    def import_files(self, project_id: int, paths: Sequence[Path]) -> list[int]:
+        """Upload image files as new tasks; returns the task ids in `paths` order."""
         handles = [p.open("rb") for p in paths]
         try:
-            files = [("files", (p.name, f)) for p, f in zip(paths, handles)]
-            resp = self.client.post(f"/api/projects/{project_id}/import", files=files)
+            # LS keeps one file per form field, so every file needs its own field name
+            files = [
+                (f"file{i}", (p.name, f))
+                for i, (p, f) in enumerate(zip(paths, handles))
+            ]
+            resp = self.client.post(
+                f"/api/projects/{project_id}/import?return_task_ids=true", files=files
+            )
         finally:
             for f in handles:
                 f.close()
         resp.raise_for_status()
-        return resp.json().get("task_count", 0)
+        task_ids = [int(i) for i in resp.json().get("task_ids") or []]
+        if len(task_ids) != len(paths):
+            raise RuntimeError(
+                f"Label Studio created {len(task_ids)} tasks for {len(paths)} files"
+            )
+        return task_ids
+
+    def update_task_data(self, task_id: int, fields: dict[str, Any]) -> None:
+        """Add or overwrite keys in a task's data (LS replaces data on PATCH)."""
+        data = self.get_json(f"/api/tasks/{task_id}")["data"]
+        resp = self.client.patch(
+            f"/api/tasks/{task_id}", json={"data": {**data, **fields}}
+        )
+        resp.raise_for_status()
 
     def import_file(self, project_id: int, path: Path) -> int:
         """Upload one image as a new task; returns the task id."""

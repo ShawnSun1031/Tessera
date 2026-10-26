@@ -1,5 +1,6 @@
 """Turn uploaded files (TIFs, plain images, zips of either) into PNG/JPG images."""
 
+import re
 import shutil
 import tempfile
 import uuid
@@ -10,6 +11,19 @@ from app.services.tif import TIF_SUFFIXES, convert_tif
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 ACCEPTED_SUFFIXES = (*TIF_SUFFIXES, *IMAGE_SUFFIXES, ".zip")
+
+
+def natural_key(name: str) -> list[int | str]:
+    """Sort key that orders "2.tif" before "10.tif", like a file browser."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name.lower())]
+
+
+def sortable_name(name: str, width: int = 6) -> str:
+    """Zero-pad numbers so text sorting matches number order.
+
+    "2.png" -> "000002.png", which sorts before "000010.png".
+    """
+    return re.sub(r"\d+", lambda m: m.group().zfill(width), name)
 
 
 def unique_path(directory: Path, name: str) -> Path:
@@ -44,7 +58,8 @@ def ingest_file(src: Path, images_dir: Path) -> list[tuple[Path, str]]:
 def ingest_zip(src: Path, images_dir: Path) -> list[tuple[Path, str]]:
     outs = []
     with zipfile.ZipFile(src) as zf, tempfile.TemporaryDirectory() as tmp:
-        for info in zf.infolist():
+        members = sorted(zf.infolist(), key=lambda i: natural_key(i.filename))
+        for info in members:
             # flatten member paths: never trust directory parts from the archive
             name = Path(info.filename).name
             if info.is_dir() or name.startswith(".") or not name:
