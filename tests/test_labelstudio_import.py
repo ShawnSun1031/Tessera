@@ -72,6 +72,26 @@ def test_image_name_handles_storage_urls() -> None:
     assert image_name("/data/upload/3/ab12-x.png", png) == "ab12-x.png"
     assert image_name("/data/local-files/?d=scans/batch1/a.tif", png) == "a.tif"
     assert image_name("https://bucket.s3.amazonaws.com/img?X-Amz=1", png) == "img.png"
+    assert image_name("/data/upload/3/ab12-x.png", png, "x.png") == "x.png"
+    assert image_name("/data/upload/3/ab12-x.png", png, "scan 7") == "scan 7.png"
+
+
+def test_write_dataset_prefers_file_name(tmp_path: Path) -> None:
+    def task(i: int, **data: str) -> dict:
+        return {"id": i, "data": {"image": f"/data/upload/4/ab{i}-up{i}.png", **data},
+                "annotations": [{"result": [brush_result(two_blob_mask())]}]}  # fmt: skip
+
+    tasks = [
+        task(1, file_name="1018.png", filename="000002.png"),
+        task(2, filename="000002.png"),
+        task(3, file_name="  "),  # blank: falls back to the upload name
+        task(4, file_name="../../etc/x.png"),
+    ]
+    write_dataset(tasks, ["Crack"], tmp_path / "ds", lambda u: png_bytes(),
+                  val_ratio=0, log=lambda *_: None)  # fmt: skip
+    names = sorted(p.name for p in (tmp_path / "ds/images/train").iterdir())
+    assert names == ["000002.png", "1018.png", "ab3-up3.png", "x.png"]
+    assert (tmp_path / "ds/labels/train/1018.txt").exists()
 
 
 def test_write_dataset_with_custom_image_field(tmp_path: Path) -> None:

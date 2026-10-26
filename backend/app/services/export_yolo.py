@@ -54,11 +54,29 @@ def infer_task_type(label_config: str) -> str | None:
     return None
 
 
-def image_name(url: str, data: bytes) -> str:
-    """File name for a task image URL, with an image suffix Ultralytics accepts."""
+# task data fields naming the image; `filename` is what the platform sets
+FILE_NAME_KEYS = ("file_name", "filename")
+
+
+def task_file_name(task: Task) -> str:
+    """The task's own file name field, or "" when it has none."""
+    for key in FILE_NAME_KEYS:
+        value = task["data"].get(key)
+        if isinstance(value, str) and Path(value.strip()).name:
+            return Path(value.strip()).name
+    return ""
+
+
+def image_name(url: str, data: bytes, file_name: str = "") -> str:
+    """File name for a task image, with an image suffix Ultralytics accepts.
+
+    `file_name` wins over the name in the URL, which for uploaded files carries
+    Label Studio's random prefix (e.g. "cb7d3e9c-1018.png").
+    """
     parsed = urlparse(url)
     # local-files storage: /data/local-files/?d=folder/img.png
-    name = Path(parse_qs(parsed.query).get("d", [parsed.path])[0]).name or "image"
+    from_url = Path(parse_qs(parsed.query).get("d", [parsed.path])[0]).name
+    name = file_name or from_url or "image"
     if Path(name).suffix.lower() not in (*IMAGE_SUFFIXES, *TIF_SUFFIXES):
         with Image.open(io.BytesIO(data)) as im:
             name = f"{name}.{(im.format or 'png').lower()}"
@@ -189,7 +207,7 @@ def write_dataset(
                 log(f"[{split}] task {t['id']}: no '{data_key}' image field, skipped")
                 continue
             data = fetch_image(url)
-            name = image_name(url, data)
+            name = image_name(url, data, task_file_name(t))
             if (img_dir / name).exists():
                 name = f"{t['id']}_{name}"
             (img_dir / name).write_bytes(data)
