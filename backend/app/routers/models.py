@@ -248,6 +248,27 @@ def predict(
     return to_read(session, job)
 
 
+@router.post("/projects/{project_id}/base-weights/{name}/predict", status_code=201)
+def predict_with_uploaded(
+    name: str,
+    project: ProjectDep,
+    session: SessionDep,
+    user: CurrentUser,
+    conf: Annotated[float, Form(gt=0, lt=1)] = 0.25,
+    iou: Annotated[float, Form(gt=0, lt=1)] = 0.7,
+    imgsz: Annotated[int | None, Form(ge=64, le=2048, multiple_of=32)] = None,
+) -> JobRead:
+    """Like POST /models/{id}/predict, with a .pt uploaded to the project.
+    Without `imgsz` the image size stored in the checkpoint is used."""
+    assert project.id is not None
+    path = storage.safe_child(storage.base_weights_dir(project.id), name)
+    params = {
+        "weights": f"upload:{path.name}", "conf": conf, "iou": iou, "imgsz": imgsz,
+    }  # fmt: skip
+    job = enqueue(session, project, user, "predict", params, status_="uploading")
+    return to_read(session, job)
+
+
 class InputsRead(BaseModel):
     files: int
 

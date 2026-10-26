@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api, fileUrl, uploadInputs, type Job, type Model, type PartsProgress } from "../api";
 import { useProjectId } from "../components/Layout";
 import { PREDICT_CONF_DEFAULT, usePreferences } from "../prefs";
+import { UploadedWeights } from "../components/UploadedWeights";
 import { accuracySeries, lossSeries, METRIC_LABELS, MetricChart } from "../components/MetricChart";
 import { Dropzone, ErrorNotice, JOB_KIND_TEXT, PageHead, ProgressBar, StatusBadge, timeAgo } from "../components/ui";
 
@@ -218,14 +219,16 @@ export function PredictPage() {
   const [params] = useSearchParams();
   const models = useQuery({ queryKey: ["models", pid], queryFn: () => api.models(pid) });
   const jobs = useQuery({ queryKey: ["jobs", pid, "predict"], queryFn: () => api.jobs(pid, "predict"), refetchInterval: 5000 });
-  const [modelId, setModelId] = useState<number>(Number(params.get("model")) || 0);
+  // "model:<id>" for a model trained here, "upload:<name>" for an uploaded .pt
+  const [picked, setPicked] = useState(params.get("model") ? `model:${params.get("model")}` : "");
   const { prefs, save } = usePreferences();
   const [chosenConf, setConf] = useState<number | null>(null);
   const conf = chosenConf ?? prefs.predict_conf ?? PREDICT_CONF_DEFAULT;
   const [files, setFiles] = useState<File[]>([]);
   const [progress, setProgress] = useState<PartsProgress | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const chosen = modelId || models.data?.[0]?.id || 0;
+  const chosen = picked || (models.data?.length ? `model:${models.data[0].id}` : "");
+  const chosenModel = models.data?.find((m) => chosen === `model:${m.id}`);
 
   // leaving the page stops the upload; ask first
   useEffect(() => {
@@ -242,7 +245,9 @@ export function PredictPage() {
     setProgress({ sentBytes: 0, totalBytes: 1, sentFiles: 0, totalFiles: ordered.length });
     let job: Job | null = null;
     try {
-      job = await api.createPredictJob(chosen, conf);
+      job = chosen.startsWith("upload:")
+        ? await api.createUploadedPredictJob(pid, chosen.slice("upload:".length), conf)
+        : await api.createPredictJob(Number(chosen.slice("model:".length)), conf);
       await uploadInputs(job.id, ordered, setProgress);
       await api.startJob(job.id);
       qc.invalidateQueries({ queryKey: ["queue"] });
@@ -254,37 +259,38 @@ export function PredictPage() {
     }
   };
 
-  if (models.isSuccess && !models.data.length) {
-    return (
-      <div className="stack">
-        <PageHead title="Predict" />
-        <div className="panel">
-          <p>Train a model first, then come back to run it on new images.</p>
-          <Link className="btn primary" to="../train">
-            Train a model
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="stack">
       <PageHead title="Predict">
         <p>Run a trained model on images it hasn't seen. You get each image with the findings drawn on, plus a file with exact positions.</p>
       </PageHead>
       <section className="panel stack">
-        <label className="field">
-          Model
-          <select value={chosen} onChange={(e) => setModelId(Number(e.target.value))}>
-            {models.data?.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-                {headline(m) ? ` (mAP ${headline(m)!.value.toFixed(3)})` : ""}
-              </option>
+        <h2 style={{ margin: 0 }}>Model</h2>
+        {models.isSuccess && !models.data.length && (
+          <p className="muted small" style={{ margin: 0 }}>
+            No models trained here yet. <Link to="../train">Train one</Link>, or upload a .pt file below.
+          </p>
+        )}
+        {!!models.data?.length && (
+          <div className="choice-grid" role="radiogroup">
+            {models.data.map((m) => (
+              <label className="choice" key={m.id}>
+                <input type="radio" name="base" checked={chosen === `model:${m.id}`} onChange={() => setPicked(`model:${m.id}`)} />
+                <span>
+                  <strong>{m.name}</strong>
+                  <span className="num">{headline(m) ? `mAP ${headline(m)!.value.toFixed(3)}` : "No metrics"}</span>
+                </span>
+              </label>
             ))}
-          </select>
-        </label>
+          </div>
+        )}
+        <UploadedWeights
+          title="Or use your own weights"
+          hint="An Ultralytics YOLO .pt trained elsewhere. Findings use its own class names."
+          selected={chosen}
+          onSelect={setPicked}
+          fallback=""
+        />
         <label className="field">
           Minimum confidence: {Math.round(conf * 100)}%
           <span className="help">Lower finds more objects but adds false alarms. Raise it if you see detections that aren't there.</span>
@@ -304,9 +310,9 @@ export function PredictPage() {
             </button>
           </div>
         )}
-        {models.data?.find((m) => m.id === chosen) && (
+        {chosen && (
           <p className="small muted" style={{ margin: 0 }}>
-            Images are resized to {models.data.find((m) => m.id === chosen)!.imgsz} px, the size this model was trained at.
+            Images are resized to {chosenModel ? `${chosenModel.imgsz} px, ` : ""}the size this model was trained at.
           </p>
         )}
         <Dropzone

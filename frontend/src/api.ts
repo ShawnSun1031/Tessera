@@ -367,6 +367,11 @@ export const api = {
     form.append("conf", String(conf));
     return request<Job>(`/models/${id}/predict`, { method: "POST", body: form });
   },
+  createUploadedPredictJob: (projectId: number, weights: string, conf: number) => {
+    const form = new FormData();
+    form.append("conf", String(conf));
+    return request<Job>(`/projects/${projectId}/base-weights/${encodeURIComponent(weights)}/predict`, { method: "POST", body: form });
+  },
   startJob: (id: number) => request<Job>(`/jobs/${id}/start`, { method: "POST" }),
   sendPredictions: (jobId: number) =>
     request<SentToLabelStudio>(`/labelstudio/send-predictions/${jobId}`, { method: "POST" }),

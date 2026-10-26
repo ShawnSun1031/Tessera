@@ -170,11 +170,13 @@ def predict(
     out_dir: Path,
     conf: float,
     iou: float,
-    imgsz: int,
+    imgsz: int | None,
     device: str,
     on_progress: Callable[[int, int], bool],
 ) -> dict[str, Any]:
     """Run inference; writes overlays to out_dir/images and out_dir/predictions.json.
+
+    `imgsz` None uses the size stored in the checkpoint (its training size).
 
     Images go through the GPU in batches while overlays are drawn and saved on
     other threads (PNG encoding takes about as long as the inference itself).
@@ -187,6 +189,7 @@ def predict(
     records = []
     counts: dict[str, int] = {}
     batch = PREDICT_BATCH
+    size: dict[str, Any] = {"imgsz": imgsz} if imgsz else {}
     saving: list[Future[Any]] = []
     with ThreadPoolExecutor(SAVE_THREADS) as pool:
         i = 0
@@ -196,8 +199,9 @@ def predict(
             chunk = inputs[i : i + batch]
             try:
                 results = model.predict(
-                    [str(p) for p in chunk], conf=conf, iou=iou, imgsz=imgsz,
+                    [str(p) for p in chunk], conf=conf, iou=iou,
                     device=device or None, batch=batch, verbose=False,
+                    **size,
                 )  # fmt: skip
             except torch.cuda.OutOfMemoryError:
                 if batch == 1:

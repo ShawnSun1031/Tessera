@@ -5,7 +5,8 @@ import { api, fileUrl, TERMINAL, type Architecture, type Job, type SentToLabelSt
 import { TRAIN_DEFAULTS, usePreferences, type Preferences, type PreferencesPatch, type TrainSettings } from "../prefs";
 import { useProjectId } from "../components/Layout";
 import { accuracySeries, lossSeries, METRIC_LABELS, MetricChart } from "../components/MetricChart";
-import { Dropzone, duration, ErrorNotice, JOB_KIND_TEXT, PageHead, ProgressBar, StatusBadge, useJobStream } from "../components/ui";
+import { UploadedWeights } from "../components/UploadedWeights";
+import { duration, ErrorNotice, JOB_KIND_TEXT, PageHead, ProgressBar, StatusBadge, useJobStream } from "../components/ui";
 
 const AUGMENT_TEXT: Record<TrainRequest["augment"], string> = {
   none: "Off. Only for checking that training works at all.",
@@ -161,7 +162,13 @@ function TrainForm({
             </div>
           </>
         )}
-        <UploadedWeights taskType={taskType} selected={form.base_model} onSelect={(v) => set("base_model", v)} fallback={defaultBase} />
+        <UploadedWeights
+          title="Or start from your own weights"
+          hint={`An Ultralytics YOLO ${taskType === "segment" ? "segmentation" : "detection"} model trained elsewhere. Its classes may differ from this project's.`}
+          selected={form.base_model}
+          onSelect={(v) => set("base_model", v)}
+          fallback={defaultBase}
+        />
       </section>
 
       <section className="panel stack">
@@ -245,82 +252,6 @@ function TrainForm({
         </button>
       </div>
     </form>
-  );
-}
-
-/** Weights trained elsewhere (.pt), uploaded to the project to start training from. */
-function UploadedWeights({
-  taskType,
-  selected,
-  onSelect,
-  fallback,
-}: {
-  taskType: TaskType;
-  selected: string;
-  onSelect: (base: string) => void;
-  fallback: string;
-}) {
-  const pid = useProjectId();
-  const qc = useQueryClient();
-  const weights = useQuery({ queryKey: ["base-weights", pid], queryFn: () => api.baseWeights(pid) });
-  const [progress, setProgress] = useState<number | null>(null);
-  const send = useMutation({
-    mutationFn: (file: File) => {
-      setProgress(0);
-      return api.uploadBaseWeights(pid, file, setProgress);
-    },
-    onSuccess: (w) => {
-      qc.invalidateQueries({ queryKey: ["base-weights", pid] });
-      onSelect(`upload:${w.name}`);
-    },
-    onSettled: () => setProgress(null),
-  });
-  const remove = useMutation({
-    mutationFn: (name: string) => api.deleteBaseWeights(pid, name),
-    onSuccess: (_, name) => {
-      if (selected === `upload:${name}`) onSelect(fallback);
-      qc.invalidateQueries({ queryKey: ["base-weights", pid] });
-    },
-  });
-
-  return (
-    <>
-      <h3>Or start from your own weights</h3>
-      {!!weights.data?.length && (
-        <div className="choice-grid">
-          {weights.data.map((w) => (
-            <label className="choice" key={w.name}>
-              <input type="radio" name="base" checked={selected === `upload:${w.name}`} onChange={() => onSelect(`upload:${w.name}`)} />
-              <span>
-                <strong style={{ overflowWrap: "anywhere" }}>{w.name}</strong>
-                <span className="num">{(w.size / 1024 / 1024).toFixed(1)} MB</span>{" "}
-                <button
-                  type="button"
-                  className="linkish small"
-                  disabled={remove.isPending}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (confirm(`Delete ${w.name}? Models already trained from it are kept.`)) remove.mutate(w.name);
-                  }}
-                >
-                  Delete
-                </button>
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
-      <Dropzone
-        accept=".pt"
-        multiple={false}
-        disabled={progress !== null}
-        onFiles={([file]) => send.mutate(file)}
-        title="Drop a .pt file here, or click to choose"
-        hint={`An Ultralytics YOLO ${taskType === "segment" ? "segmentation" : "detection"} model trained elsewhere. Its classes may differ from this project's.`}
-      />
-      {progress !== null && <ProgressBar value={progress} running />}
-      <ErrorNotice error={send.error ?? remove.error} />
-    </>
   );
 }
 

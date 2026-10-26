@@ -14,7 +14,7 @@ from app.services import training
 from app.db import get_engine
 from app.models import TrainedModel
 from conftest import png_bytes
-from test_jobs import detect_project, upload_dataset, yolo_zip
+from test_jobs import detect_project, fake_weights, upload_dataset, yolo_zip
 
 
 def make_model(client: TestClient, headers: dict[str, str]) -> int:
@@ -99,6 +99,35 @@ def test_upload_in_parts_then_predict(
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         assert "images/20.png" in zf.namelist() and "predictions.json" in zf.namelist()
         assert zf.getinfo("images/20.png").compress_type == zipfile.ZIP_STORED
+
+
+def test_predict_with_uploaded_weights(
+    client: TestClient, admin: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = detect_project(client, admin)["id"]
+    weights = f"/api/projects/{pid}/base-weights"
+    files = {"file": ("mine.pt", fake_weights())}
+    assert client.post(weights, files=files, headers=admin).status_code == 201
+    assert client.post(f"{weights}/nope.pt/predict", headers=admin).status_code == 404
+
+    job = client.post(f"{weights}/mine.pt/predict", headers=admin).json()
+    assert job["params"] == {"weights": "upload:mine.pt", "conf": 0.25, "iou": 0.7, "imgsz": None}
+    url = f"/api/jobs/{job['id']}"
+    client.post(f"{url}/inputs", files=[image("1.png")], headers=admin)
+    client.post(f"{url}/start", headers=admin)
+
+    used: list[Path] = []
+    predict = fake_predict([])
+    monkeypatch.setattr(
+        worker.training, "predict",
+        lambda w, *args: used.append(w) or predict(w, *args),
+    )  # fmt: skip
+    engine = get_engine()
+    assert worker.claim_next(engine, "test") == job["id"]
+    worker.run_job(engine, job["id"])
+    done = client.get(url, headers=admin).json()
+    assert done["status"] == "succeeded", done["error"]
+    assert used == [storage.base_weights_dir(pid) / "mine.pt"]
 
 
 def test_upload_limit(

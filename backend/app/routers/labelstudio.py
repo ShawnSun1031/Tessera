@@ -151,7 +151,12 @@ def send_predictions(
         tools = labeling_tools(ls.project(ls_project_id)["label_config"])
     except (ValueError, ET.ParseError) as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
-    version = f"{model.name} (model #{model.id})" if model else f"job {job.id}"
+    if model:
+        version = f"{model.name} (model #{model.id})"
+    elif weights := job.params.get("weights"):
+        version = f"{weights.removeprefix('upload:')} (uploaded)"
+    else:
+        version = f"job {job.id}"
     inputs = storage.job_dir(job.id) / "inputs"
     objects = skipped = 0
     for record in records:

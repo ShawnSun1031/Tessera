@@ -246,7 +246,11 @@ def prepare_inputs(ctx: JobContext, job_id: int) -> tuple[list[Path], int]:
 def run_predict(ctx: JobContext, job: Job, project: Project) -> dict[str, Any]:
     assert job.id is not None
     p = job.params
-    model = load_model(ctx, project, p["model_id"])
+    if "weights" in p:  # a .pt uploaded to the project
+        with Session(ctx.engine) as session:
+            weights = Path(resolve_base_weights(session, project, p["weights"]))
+    else:
+        weights = storage.weights_path(load_model(ctx, project, p["model_id"]).job_id)
     inputs, skipped = prepare_inputs(ctx, job.id)
     if not inputs:
         raise RuntimeError("None of the uploaded files could be read as images")
@@ -256,7 +260,7 @@ def run_predict(ctx: JobContext, job: Job, project: Project) -> dict[str, Any]:
 
     out = storage.job_dir(job.id) / "output"
     result = training.predict(
-        storage.weights_path(model.job_id), inputs, out,
+        weights, inputs, out,
         p.get("conf", 0.25), p.get("iou", 0.7), p.get("imgsz", 640),
         get_settings().device, on_progress,
     )  # fmt: skip
