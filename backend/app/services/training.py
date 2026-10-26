@@ -3,6 +3,7 @@
 import json
 import math
 import shutil
+import tempfile
 import zipfile
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -229,7 +230,11 @@ def predict(
             f.result()
     on_progress(len(inputs), len(inputs))
     (out_dir / "predictions.json").write_text(json.dumps(records, indent=1))
-    return {"images": len(inputs), "objects": sum(counts.values()), "per_class": counts}
+    classes = [model.names[i] for i in sorted(model.names)]
+    return {
+        "images": len(inputs), "objects": sum(counts.values()), "per_class": counts,
+        "classes": classes,
+    }  # fmt: skip
 
 
 def zip_output(out_dir: Path, archive: Path) -> None:
@@ -241,6 +246,56 @@ def zip_output(out_dir: Path, archive: Path) -> None:
             method = zipfile.ZIP_STORED if png else zipfile.ZIP_DEFLATED
             zf.write(path, path.relative_to(out_dir), compress_type=method)
     partial.replace(archive)
+
+
+def yolo_label_lines(record: dict[str, Any], segment: bool) -> list[str]:
+    """YOLO label lines for one predictions.json record: polygons when `segment`,
+    else boxes (class cx cy w h), all normalized to 0..1."""
+    w, h = record["width"], record["height"]
+    lines = []
+    for obj in record["objects"]:
+        cls = obj["class_id"]
+        if segment:
+            poly = obj.get("polygon_xyn") or []
+            if len(poly) >= 3:
+                lines.append(f"{cls} " + " ".join(f"{x:.6f} {y:.6f}" for x, y in poly))
+            continue
+        x0, y0, x1, y1 = obj["box_xyxy"]
+        cx, cy = (x0 + x1) / 2 / w, (y0 + y1) / 2 / h
+        lines.append(f"{cls} {cx:.6f} {cy:.6f} {(x1 - x0) / w:.6f} {(y1 - y0) / h:.6f}")
+    return lines
+
+
+def prediction_classes(records: list[dict[str, Any]]) -> list[str]:
+    """Class names seen in predictions, for runs from before `classes` was saved;
+    ids without a detection get a placeholder name."""
+    seen = {o["class_id"]: o["class"] for r in records for o in r["objects"]}
+    return [seen.get(i, f"class{i}") for i in range(max(seen, default=-1) + 1)]
+
+
+def zip_yolo(
+    records: list[dict[str, Any]], inputs: Path, classes: list[str], archive: Path
+) -> None:
+    """Zip the input images with the predictions as YOLO labels, plus data.yaml.
+
+    Segmentation models' output becomes polygons, detection models' boxes.
+    """
+    segment = any("polygon_xyn" in o for r in records for o in r["objects"])
+    yaml = ["train: images", "val: images", "names:"]
+    yaml += [f"  {i}: {n}" for i, n in enumerate(classes)]
+    with tempfile.NamedTemporaryFile(dir=archive.parent, delete=False) as tmp:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("data.yaml", "\n".join(yaml) + "\n")
+            for record in records:
+                image = inputs / record["image"]
+                # PNGs gain nothing from recompressing
+                stored = zipfile.ZIP_STORED
+                zf.write(image, f"images/{image.name}", compress_type=stored)
+                lines = yolo_label_lines(record, segment)
+                text = "\n".join(lines) + ("\n" if lines else "")
+                zf.writestr(f"labels/{image.stem}.txt", text)
+    # atomic: concurrent downloads never see a half-written zip
+    Path(tmp.name).replace(archive)
 
 
 def export_onnx(weights: Path, imgsz: int) -> Path:

@@ -49,6 +49,11 @@ def output_zip(job_id: int) -> Path:
     return job_dir(job_id) / "output.zip"
 
 
+def yolo_zip(job_id: int) -> Path:
+    """Inference output as a YOLO dataset (images/, labels/, data.yaml)."""
+    return job_dir(job_id) / "yolo.zip"
+
+
 def log_path(job_id: int) -> Path:
     return job_dir(job_id) / "log.txt"
 

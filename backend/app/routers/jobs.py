@@ -3,7 +3,7 @@ import json
 import shutil
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
@@ -221,12 +221,24 @@ def job_file(job: JobDep, path: str) -> FileResponse:
 
 
 @router.get("/jobs/{job_id}/download")
-def download_output(job: JobDep) -> FileResponse:
-    """Zip of a finished inference job's output (overlays + predictions.json)."""
+def download_output(
+    job: JobDep, format: Literal["overlays", "yolo"] = "overlays"
+) -> FileResponse:
+    """Zip of a finished inference job's output: `overlays` (images with the
+    findings drawn on + predictions.json) or `yolo` (the input images with the
+    predictions as YOLO labels: images/, labels/, data.yaml)."""
     assert job.id is not None
     out = storage.job_dir(job.id) / "output"
     if job.status != "succeeded" or not out.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No output to download")
+    if format == "yolo":
+        archive = storage.yolo_zip(job.id)
+        if not archive.exists():
+            records = json.loads((out / "predictions.json").read_text())
+            classes = job.result.get("classes") or training.prediction_classes(records)
+            inputs = storage.job_dir(job.id) / "inputs"
+            training.zip_yolo(records, inputs, classes, archive)
+        return FileResponse(archive, filename=f"predictions_job{job.id}_yolo.zip")
     archive = storage.output_zip(job.id)
     if not archive.exists():  # jobs from before the worker wrote the zip itself
         training.zip_output(out, archive)

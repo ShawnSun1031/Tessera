@@ -185,6 +185,8 @@ def test_predict_batches_and_shrinks_on_out_of_memory(
     calls: list[int] = []
 
     class FakeYOLO:
+        names = {0: "Hole"}
+
         def __init__(self, weights: str) -> None:
             pass
 
@@ -211,3 +213,71 @@ def test_predict_batches_and_shrinks_on_out_of_memory(
             Path("best.pt"), inputs, tmp_path / "again", 0.25, 0.7, 640, "",
             lambda done, total: done > 0,
         )  # fmt: skip
+
+
+def run_predict_job(
+    client: TestClient, admin: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    records: list[dict[str, Any]], classes: list[str] | None,
+) -> int:  # fmt: skip
+    model_id = make_model(client, admin)
+    job = client.post(f"/api/models/{model_id}/predict", headers=admin).json()
+    url = f"/api/jobs/{job['id']}"
+    files = [image(r["image"]) for r in records]
+    client.post(f"{url}/inputs", files=files, headers=admin)
+    client.post(f"{url}/start", headers=admin)
+
+    def predict(weights: Path, inputs: list[Path], out: Path, *args: Any) -> dict:  # noqa: ANN401
+        (out / "images").mkdir(parents=True)
+        (out / "predictions.json").write_text(json.dumps(records))
+        result: dict[str, Any] = {"images": len(inputs), "objects": 0, "per_class": {}}
+        return {**result, "classes": classes} if classes else result
+
+    monkeypatch.setattr(worker.training, "predict", predict)
+    engine = get_engine()
+    assert worker.claim_next(engine, "test") == job["id"]
+    worker.run_job(engine, job["id"])
+    return job["id"]
+
+
+def yolo_download(client: TestClient, admin: dict[str, str], job_id: int) -> dict:
+    resp = client.get(f"/api/jobs/{job_id}/download?format=yolo", headers=admin)
+    assert resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        return {n: zf.read(n) for n in zf.namelist()}
+
+
+def test_download_predictions_as_yolo_dataset(
+    client: TestClient, admin: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    box = {"class_id": 1, "class": "Hole", "confidence": 0.9, "box_xyxy": [16, 0, 48, 32]}
+    records = [
+        {"image": "a.png", "width": 64, "height": 64, "objects": [box]},
+        {"image": "b.png", "width": 64, "height": 64, "objects": []},
+    ]
+    job_id = run_predict_job(client, admin, monkeypatch, records, ["Crack", "Hole"])
+    files = yolo_download(client, admin, job_id)
+    assert sorted(files) == [
+        "data.yaml", "images/a.png", "images/b.png", "labels/a.txt", "labels/b.txt",
+    ]  # fmt: skip
+    assert files["labels/a.txt"] == b"1 0.500000 0.250000 0.500000 0.500000\n"
+    assert files["labels/b.txt"] == b""
+    assert files["images/a.png"] == png_bytes()  # the input, not an overlay
+    assert b"names:\n  0: Crack\n  1: Hole\n" in files["data.yaml"]
+    # the default download is unchanged
+    resp = client.get(f"/api/jobs/{job_id}/download", headers=admin)
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        assert "predictions.json" in zf.namelist()
+
+
+def test_yolo_download_of_segmentation_run_without_saved_classes(
+    client: TestClient, admin: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poly = {"class_id": 2, "class": "Rust", "confidence": 0.8, "box_xyxy": [0, 0, 1, 1],
+            "polygon_xyn": [[0.1, 0.1], [0.5, 0.1], [0.5, 0.5]]}  # fmt: skip
+    sliver = {**poly, "polygon_xyn": [[0.1, 0.1], [0.2, 0.2]]}  # too few points
+    records = [{"image": "a.png", "width": 64, "height": 64, "objects": [poly, sliver]}]
+    job_id = run_predict_job(client, admin, monkeypatch, records, None)
+    files = yolo_download(client, admin, job_id)
+    label = b"2 0.100000 0.100000 0.500000 0.100000 0.500000 0.500000\n"
+    assert files["labels/a.txt"] == label
+    assert b"names:\n  0: class0\n  1: class1\n  2: Rust\n" in files["data.yaml"]

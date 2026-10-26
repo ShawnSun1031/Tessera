@@ -574,14 +574,19 @@ export function PredictionResult({ job }: { job: Job }) {
           <a className="btn" href={fileUrl(`/jobs/${job.id}/files/output/predictions.json`)} download={`predictions_job${job.id}.json`}>
             Coordinates only (.json)
           </a>
+          <a className="btn" href={fileUrl(`/jobs/${job.id}/download?format=yolo`)}>
+            YOLO dataset (.zip)
+          </a>
           <a className="btn primary" href={fileUrl(`/jobs/${job.id}/download`)}>
             Download all (.zip)
           </a>
         </div>
       </div>
       <p className="small muted">
-        The zip has every image with its detections drawn on, plus predictions.json with exact coordinates and confidence. For
-        thousands of images the zip is large; download the .json alone if you only need the coordinates.
+        <strong>Download all</strong> has every image with its detections drawn on, plus predictions.json with exact
+        coordinates and confidence. <strong>YOLO dataset</strong> has the original images in images/ and the predictions
+        as YOLO labels in labels/, with a data.yaml, ready for other YOLO tools. For thousands of images the zips are
+        large; download the .json alone if you only need the coordinates.
       </p>
       {job.result.skipped_files > 0 && (
         <div className="notice error">
