@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import get_settings
+from app.config import get_settings, label_studio_url
 from app.services import ls_server
 
 # Stands in for `label-studio start`: answers /health and records its environment
@@ -122,3 +122,30 @@ def test_default_command_uses_the_url_port(monkeypatch: pytest.MonkeyPatch) -> N
     assert ls_server.start_command("http://localhost:8081", "docker start ls") == [
         "docker", "start", "ls",
     ]  # fmt: skip
+
+
+def test_label_studio_port_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert label_studio_url("http://localhost:8080", "") == "http://localhost:8080"
+    assert label_studio_url("http://localhost:8080", "9001") == "http://localhost:9001"
+    assert label_studio_url("http://127.0.0.1/", "9001") == "http://127.0.0.1:9001/"
+    assert label_studio_url("http://[::1]:8080", "9001") == "http://[::1]:9001"
+    for bad in ("abc", "0", "70000"):
+        with pytest.raises(ValueError, match="port number"):
+            label_studio_url("http://localhost:8080", bad)
+    with pytest.raises(ValueError, match="only applies to a Label Studio on localhost"):
+        label_studio_url("http://ls.example.com", "9001")
+
+    # without LABEL_STUDIO_URL it sets the default's port; links follow
+    monkeypatch.chdir(tmp_path)  # no .env
+    monkeypatch.setenv("STORAGE_DIR", str(tmp_path))
+    monkeypatch.delenv("LABEL_STUDIO_URL", raising=False)
+    monkeypatch.delenv("LABEL_STUDIO_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("LABEL_STUDIO_PORT", "8090")
+    get_settings.cache_clear()
+    try:
+        s = get_settings()
+        assert s.label_studio_url == s.label_studio_public_url == "http://localhost:8090"
+    finally:
+        get_settings.cache_clear()

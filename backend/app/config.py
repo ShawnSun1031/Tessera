@@ -5,8 +5,10 @@ import secrets
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from app.services.labelstudio import load_env
+from app.services.ls_server import LOCAL_HOSTS
 
 
 @dataclass(frozen=True)
@@ -36,11 +38,30 @@ def persistent_secret(storage_dir: Path) -> str:
     return path.read_text().strip()
 
 
+def label_studio_url(url: str, port: str) -> str:
+    """LABEL_STUDIO_URL with LABEL_STUDIO_PORT, if set, as the port of a local one."""
+    if not port:
+        return url
+    if not port.isdigit() or not 0 < int(port) < 65536:
+        raise ValueError(f"LABEL_STUDIO_PORT must be a port number, not {port!r}")
+    parts = urlsplit(url)
+    if parts.hostname not in LOCAL_HOSTS:
+        raise ValueError(
+            "LABEL_STUDIO_PORT only applies to a Label Studio on localhost;"
+            f" put the port in LABEL_STUDIO_URL ({url}) instead"
+        )
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return parts._replace(netloc=f"{host}:{port}").geturl()
+
+
 @lru_cache
 def get_settings() -> Settings:
     load_env()
     env = os.environ.get
-    ls_url = env("LABEL_STUDIO_URL", "http://localhost:8080")
+    ls_url = label_studio_url(
+        env("LABEL_STUDIO_URL", "http://localhost:8080"),
+        env("LABEL_STUDIO_PORT", "").strip(),
+    )
     storage_dir = Path(env("STORAGE_DIR", "storage")).resolve()
     return Settings(
         database_url=env("DATABASE_URL", f"sqlite:///{storage_dir}/platform.db"),

@@ -50,9 +50,10 @@ the job it was running as failed.
 | `SECRET_KEY` | random, persisted in `storage/.secret_key` |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / unset (no admin bootstrap) |
 | `LABEL_STUDIO_URL` | `http://localhost:8080` |
+| `LABEL_STUDIO_PORT` | unset; when set, the port of a localhost `LABEL_STUDIO_URL` (e.g. `8081` gives `http://localhost:8081`). Also the port **Start Label Studio** launches on |
 | `LABEL_STUDIO_PUBLIC_URL` | same as `LABEL_STUDIO_URL` (used for links shown to users) |
 | `LABEL_STUDIO_API_KEY` | required for Label Studio sync and export |
-| `LABEL_STUDIO_COMMAND` | how the **Start Label Studio** button launches it; default `label-studio start --port <port from LABEL_STUDIO_URL> --no-browser`. Only offered when `LABEL_STUDIO_URL` is on localhost; output goes to `STORAGE_DIR/label-studio.log` |
+| `LABEL_STUDIO_COMMAND` | how the **Start Label Studio** button launches it; default `label-studio start --port <port of LABEL_STUDIO_URL> --no-browser`. Only offered when `LABEL_STUDIO_URL` is on localhost; output goes to `STORAGE_DIR/label-studio.log` |
 | `MAX_PREDICT_IMAGES` | `20000` images per prediction run |
 | `DEVICE` | worker GPU, e.g. `0`; empty lets Ultralytics choose |
 | `WORKER_NAME` | `<hostname>:<DEVICE>` |

@@ -107,6 +107,7 @@ def client(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/test.db")
     monkeypatch.setenv("ADMIN_USERNAME", "admin")
     monkeypatch.setenv("ADMIN_PASSWORD", "admin-password")
+    monkeypatch.setenv("LABEL_STUDIO_PORT", "")  # ignore one set in a local .env
     get_settings.cache_clear()
     get_engine.cache_clear()
     from app.main import app
