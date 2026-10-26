@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from app import storage, worker
+from app.services import training
 from app.db import get_engine
 from app.models import TrainedModel
 from conftest import png_bytes
@@ -136,3 +137,48 @@ def test_abandoned_uploads_are_cleaned_up(
     expired = client.get(f"/api/jobs/{ids[1]}", headers=admin).json()
     assert (expired["status"], expired["error"]) == ("cancelled", "The upload was not finished")
     assert not storage.uploads_dir(ids[1]).exists()
+
+
+class FakeResult:
+    boxes = None
+    orig_shape = (8, 8)
+
+    def save(self, filename: str) -> None:
+        Path(filename).write_bytes(b"png")
+
+
+def test_predict_batches_and_shrinks_on_out_of_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import torch
+    import ultralytics
+
+    calls: list[int] = []
+
+    class FakeYOLO:
+        def __init__(self, weights: str) -> None:
+            pass
+
+        def predict(self, sources: list[str], batch: int, **kwargs: Any) -> list:  # noqa: ANN401
+            calls.append(len(sources))
+            if len(sources) > 4:
+                raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+            return [FakeResult() for _ in sources]
+
+    monkeypatch.setattr(ultralytics, "YOLO", FakeYOLO)
+    inputs = [tmp_path / f"{i}.png" for i in range(1, 11)]
+    out = tmp_path / "out"
+    result = training.predict(
+        Path("best.pt"), inputs, out, 0.25, 0.7, 640, "", lambda done, total: False
+    )
+    assert result["images"] == 10
+    assert calls == [10, 8, 4, 4, 2]  # 16 -> 8 -> 4 after two out-of-memory errors
+    records = json.loads((out / "predictions.json").read_text())
+    assert [r["image"] for r in records] == [p.name for p in inputs]
+    assert sorted(p.name for p in (out / "images").iterdir()) == sorted(p.name for p in inputs)
+
+    with pytest.raises(training.Cancelled):
+        training.predict(
+            Path("best.pt"), inputs, tmp_path / "again", 0.25, 0.7, 640, "",
+            lambda done, total: done > 0,
+        )  # fmt: skip

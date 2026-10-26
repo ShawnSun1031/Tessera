@@ -5,6 +5,7 @@ import math
 import shutil
 import zipfile
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -34,6 +35,9 @@ AUGMENT_PRESETS: dict[str, dict[str, float]] = {
 }
 
 # metric keys shown as the model's headline numbers
+PREDICT_BATCH = 16  # images per GPU call; halved automatically on out-of-memory
+SAVE_THREADS = 8  # threads drawing and writing overlay PNGs
+
 SUMMARY_KEYS = (
     "metrics/precision(B)", "metrics/recall(B)", "metrics/mAP50(B)",
     "metrics/mAP50-95(B)", "metrics/mAP50(M)", "metrics/mAP50-95(M)",
@@ -164,29 +168,55 @@ def predict(
     device: str,
     on_progress: Callable[[int, int], bool],
 ) -> dict[str, Any]:
-    """Run inference; writes overlays to out_dir/images and out_dir/predictions.json."""
+    """Run inference; writes overlays to out_dir/images and out_dir/predictions.json.
+
+    Images go through the GPU in batches while overlays are drawn and saved on
+    other threads (PNG encoding takes about as long as the inference itself).
+    """
+    import torch
     from ultralytics import YOLO
 
     model = YOLO(str(weights))
     (out_dir / "images").mkdir(parents=True, exist_ok=True)
     records = []
     counts: dict[str, int] = {}
-    for i, path in enumerate(inputs):
-        if on_progress(i, len(inputs)):
-            raise Cancelled
-        results = model.predict(
-            str(path), conf=conf, iou=iou, imgsz=imgsz, device=device or None,
-            verbose=False,
-        )  # fmt: skip
-        result = cast("list[Results]", results)[0]
-        result.save(filename=str(out_dir / "images" / f"{path.stem}.png"))
-        objects = result_objects(result)
-        for obj in objects:
-            counts[obj["class"]] = counts.get(obj["class"], 0) + 1
-        height, width = result.orig_shape[:2]
-        records.append(
-            {"image": path.name, "width": width, "height": height, "objects": objects}
-        )
+    batch = PREDICT_BATCH
+    saving: list[Future[Any]] = []
+    with ThreadPoolExecutor(SAVE_THREADS) as pool:
+        i = 0
+        while i < len(inputs):
+            if on_progress(i, len(inputs)):
+                raise Cancelled
+            chunk = inputs[i : i + batch]
+            try:
+                results = model.predict(
+                    [str(p) for p in chunk], conf=conf, iou=iou, imgsz=imgsz,
+                    device=device or None, batch=batch, verbose=False,
+                )  # fmt: skip
+            except torch.cuda.OutOfMemoryError:
+                if batch == 1:
+                    raise
+                batch //= 2  # big model or image size: retry with smaller batches
+                torch.cuda.empty_cache()
+                continue
+            # keep at most one batch of overlays waiting to be written
+            for f in saving:
+                f.result()
+            saving = []
+            for path, result in zip(chunk, cast("list[Results]", results)):
+                overlay = str(out_dir / "images" / f"{path.stem}.png")
+                saving.append(pool.submit(result.save, filename=overlay))
+                objects = result_objects(result)
+                for obj in objects:
+                    counts[obj["class"]] = counts.get(obj["class"], 0) + 1
+                height, width = result.orig_shape[:2]
+                records.append(
+                    {"image": path.name, "width": width, "height": height,
+                     "objects": objects}
+                )  # fmt: skip
+            i += len(chunk)
+        for f in saving:
+            f.result()
     on_progress(len(inputs), len(inputs))
     (out_dir / "predictions.json").write_text(json.dumps(records, indent=1))
     return {"images": len(inputs), "objects": sum(counts.values()), "per_class": counts}
