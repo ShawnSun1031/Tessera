@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# Ultralytics outputs
+runs/
+weights/
+*.pt
+
+# Platform data
+storage/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+data/
+datas/
+dataset/
+datasets/
+.claude/
