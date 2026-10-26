@@ -6,6 +6,7 @@ import { LabelStudioPicker } from "../components/LabelStudioPicker";
 import { usePreferences, VAL_PCT_DEFAULT } from "../prefs";
 import { useProjectId } from "../components/Layout";
 import { Dropzone, ErrorNotice, PageHead, ProgressBar, StatusBadge } from "../components/ui";
+import { LabelStudioServerNotice, useLabelStudioServer } from "../components/LabelStudioServer";
 
 const IMAGE_ACCEPT = ".tif,.tiff,.png,.jpg,.jpeg,.bmp,.webp,.zip";
 const THUMB_LIMIT = 48;
@@ -120,13 +121,15 @@ export function AnnotatePage() {
   });
   const s = status.data;
   const segment = project.data?.task_type === "segment";
+  const lsDown = useLabelStudioServer().data?.reachable === false;
 
   return (
     <div className="stack">
       <PageHead title="Annotate">
         <p>Labeling happens in Label Studio. Open it in a new tab, label your images, then come back here.</p>
       </PageHead>
-      <ErrorNotice error={status.error} />
+      <LabelStudioServerNotice />
+      {!lsDown && <ErrorNotice error={status.error} />}
       {s && !s.ls_project_id && (
         <div className="panel stack">
           <p>
@@ -234,7 +237,7 @@ function LinkExisting({ project }: { project: Project }) {
           Use that Label Studio project instead of creating a new one. Its labels must use this project's object types
           ({project.classes.join(", ")}).
         </p>
-        <LabelStudioPicker value={lsId} onChange={setLsId} blocked={blocked} />
+        <LabelStudioPicker value={lsId} onChange={setLsId} blocked={blocked} serverNotice={false} />
         <ErrorNotice error={link.error} />
         <div>
           <button className="btn primary" onClick={() => link.mutate()} disabled={lsId === null || link.isPending}>
@@ -352,6 +355,7 @@ export function DatasetPage() {
           check how well it does. Build a new one whenever you've labeled more.
         </p>
       </PageHead>
+      <LabelStudioServerNotice />
       <section className="panel stack">
         <label className="field">
           Hold back {valPct}% of images for validation

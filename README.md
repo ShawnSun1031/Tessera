@@ -52,6 +52,8 @@ the job it was running as failed.
 | `LABEL_STUDIO_URL` | `http://localhost:8080` |
 | `LABEL_STUDIO_PUBLIC_URL` | same as `LABEL_STUDIO_URL` (used for links shown to users) |
 | `LABEL_STUDIO_API_KEY` | required for Label Studio sync and export |
+| `LABEL_STUDIO_COMMAND` | how the **Start Label Studio** button launches it; default `label-studio start --port <port from LABEL_STUDIO_URL> --no-browser`. Only offered when `LABEL_STUDIO_URL` is on localhost; output goes to `STORAGE_DIR/label-studio.log` |
+| `MAX_PREDICT_IMAGES` | `20000` images per prediction run |
 | `DEVICE` | worker GPU, e.g. `0`; empty lets Ultralytics choose |
 | `WORKER_NAME` | `<hostname>:<DEVICE>` |
 | `WORKER_POLL_SECONDS` | `2` |

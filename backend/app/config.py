@@ -18,6 +18,7 @@ class Settings:
     label_studio_url: str
     label_studio_public_url: str
     label_studio_api_key: str
+    label_studio_command: str
     admin_username: str
     admin_password: str
     device: str
@@ -49,6 +50,7 @@ def get_settings() -> Settings:
         label_studio_url=ls_url,
         label_studio_public_url=env("LABEL_STUDIO_PUBLIC_URL", ls_url),
         label_studio_api_key=env("LABEL_STUDIO_API_KEY", ""),
+        label_studio_command=env("LABEL_STUDIO_COMMAND", ""),
         admin_username=env("ADMIN_USERNAME", "admin"),
         admin_password=env("ADMIN_PASSWORD", ""),
         device=env("DEVICE", ""),

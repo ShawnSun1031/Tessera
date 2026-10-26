@@ -6,6 +6,7 @@ jobs/{job_id}/                       job log, inputs and outputs
 jobs/{job_id}/uploads/               files sent for inference, before conversion
 jobs/{job_id}/train/                 Ultralytics run dir (weights/best.pt, plots)
 weights/                             downloaded pretrained weights
+label-studio.log                     output of a Label Studio started from the UI
 """
 
 from pathlib import Path
@@ -57,6 +58,10 @@ def weights_path(train_job_id: int) -> Path:
 
 def onnx_path(train_job_id: int) -> Path:
     return weights_path(train_job_id).with_suffix(".onnx")
+
+
+def label_studio_log() -> Path:
+    return root() / "label-studio.log"
 
 
 def weights_cache() -> Path:

@@ -1,20 +1,28 @@
 import { useQuery } from "@tanstack/react-query";
 import { api, type LabelStudioProject } from "../api";
+import { LabelStudioServerNotice, useLabelStudioServer } from "./LabelStudioServer";
 import { ErrorNotice } from "./ui";
 
-/** Radio list of Label Studio projects; `blocked` returns why one can't be chosen. */
+/** Radio list of Label Studio projects; `blocked` returns why one can't be chosen.
+ * Pass `serverNotice={false}` where the page already shows LabelStudioServerNotice. */
 export function LabelStudioPicker({
   value,
   onChange,
   blocked,
+  serverNotice = true,
 }: {
   value: number | null;
   onChange: (id: number) => void;
   blocked?: (p: LabelStudioProject) => string | null;
+  serverNotice?: boolean;
 }) {
   const projects = useQuery({ queryKey: ["ls-projects"], queryFn: api.lsProjects, retry: false });
+  const server = useLabelStudioServer();
   if (projects.isLoading) return <p className="muted small">Loading Label Studio projects…</p>;
-  if (projects.error) return <ErrorNotice error={projects.error} />;
+  if (projects.error) {
+    if (server.data?.reachable === false) return serverNotice ? <LabelStudioServerNotice /> : null;
+    return <ErrorNotice error={projects.error} />;
+  }
   const list = projects.data ?? [];
   if (!list.length) return <p className="muted">There are no projects in Label Studio yet.</p>;
 

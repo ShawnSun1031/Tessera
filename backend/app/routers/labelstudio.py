@@ -13,6 +13,7 @@ from app.auth import CurrentUser, SessionDep
 from app.config import get_settings
 from app.deps import JobDep, LabelStudioDep
 from app.models import Image, Project, TrainedModel
+from app.services import ls_server
 from app.services.export_yolo import class_names, infer_task_type
 from app.services.ingest import sortable_name, unique_path
 from app.services.labelstudio import LabelStudio, label_config
@@ -50,6 +51,43 @@ def describe(p: dict[str, Any]) -> LabelStudioProject:
         classes=classes,
         problem=problem,
     )
+
+
+class ServerStatus(BaseModel):
+    url: str
+    reachable: bool
+    can_start: bool
+    starting: bool
+    reason: str | None
+
+
+def server_status() -> ServerStatus:
+    s = get_settings()
+    found = ls_server.state(
+        s.label_studio_url, s.label_studio_command, storage.label_studio_log()
+    )
+    return ServerStatus(url=s.label_studio_public_url, **vars(found))
+
+
+@router.get("/server")
+def get_server(_: CurrentUser) -> ServerStatus:
+    """Whether Label Studio is up, and whether this server can start it."""
+    return server_status()
+
+
+@router.post("/server/start")
+def start_server(_: CurrentUser) -> ServerStatus:
+    """Launch a local Label Studio; poll GET /server until it is reachable."""
+    current = server_status()
+    if current.reachable:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Label Studio is already running")
+    if not current.can_start:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, current.reason)
+    s = get_settings()
+    ls_server.start(
+        s.label_studio_url, s.label_studio_command, storage.label_studio_log()
+    )
+    return server_status()
 
 
 @router.get("/projects")

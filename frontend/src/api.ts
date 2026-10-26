@@ -316,6 +316,8 @@ export const api = {
     request<Project>(`/projects/${id}/labelstudio/link`, json({ ls_project_id })),
 
   images: (id: number) => request<ImageRow[]>(`/projects/${id}/images`),
+  lsServer: () => request<LabelStudioServer>("/labelstudio/server"),
+  startLsServer: () => request<LabelStudioServer>("/labelstudio/server/start", { method: "POST" }),
   lsStatus: (id: number) => request<LabelStudioStatus>(`/projects/${id}/labelstudio/status`),
   lsSync: (id: number) => request<LabelStudioStatus>(`/projects/${id}/labelstudio/sync`, { method: "POST" }),
 
@@ -356,6 +358,14 @@ export const api = {
     request<SentToLabelStudio>(`/labelstudio/send-predictions/${jobId}`, { method: "POST" }),
   predictions: (jobId: number) => request<PredictionRecord[]>(`/jobs/${jobId}/files/output/predictions.json`),
 };
+
+export interface LabelStudioServer {
+  url: string;
+  reachable: boolean;
+  can_start: boolean;
+  starting: boolean;
+  reason: string | null;
+}
 
 export interface SentToLabelStudio {
   ls_project_id: number;
